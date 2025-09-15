@@ -9,7 +9,6 @@
   - `frame_xxxxx.jpg`: The image file.
   - `frame_xxxxx.txt`: The corresponding file with the ground truth center points. 
   - `frame_xxxxx_boxes.txt`: The corresponding file with the ground truth bounding boxes. (necessary to determine object size for evaluation)
-- Maybe you need to do extract frames twice because its buggy.
 - You can check the transformations with `python -m data.transformations`
 - You can check the whole input data for the model with `python -m data.dataset`
 
