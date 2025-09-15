@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 
 def extract_frames(video_path, output_dir, prefix="frame"):
+    os.makedirs(output_dir, exist_ok=True)
     cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     for i in tqdm(range(total_frames), desc="Extracting frames"):
