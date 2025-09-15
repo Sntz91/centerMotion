@@ -24,7 +24,7 @@
   (you need the host part only when you are remote)
   
   
-# Interference 
+# Inference 
 - Files for interference are currently lokated within `utils` but are 
   currently refactored and will be consolidated within the `inference.py` 
   file.
