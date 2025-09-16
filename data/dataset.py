@@ -75,7 +75,12 @@ class CenterDataset(Dataset):
             return torch.empty(0, 4, dtype=torch.float32)
 
         with open(txt_path, 'r') as f:
-            boxes = [[[float(xtl), float(ytl), float(xbr), float(ybr)] for xtl, ytl, xbr, ybr in line.strip().split()] for line in f]
+            boxes = []
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) == 4:
+                    xtl, ytl, xbr, ybr = parts
+                    boxes.append([float(xtl), float(ytl), float(xbr), float(ybr)])
 
         return torch.tensor(boxes, dtype=torch.float32) if boxes else torch.empty(0, 4, dtype=torch.float32)
 
@@ -211,7 +216,7 @@ def create_val_dataloader_only(val_dir: str='inputs/val',
         pin_memory=pin_memory
     )
 
-def create_val_dataset_only(val_dir: str='inpputs/val',
+def create_val_dataset_only(val_dir: str='inputs/val',
                             img_size: int=224,
                             include_boxes: bool=True) -> CenterDataset:
     """ Create validation dataset only for convenience. """
