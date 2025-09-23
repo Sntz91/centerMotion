@@ -3,15 +3,23 @@ from PIL import Image
 from torch.utils.data import Dataset, DataLoader
 import torch
 import os
+import numpy as np
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict, Any
 from data.transformations import CenterTransform, AugmentationConfig
 
+# Ok. So the problem is that if i use data augmentations, 
+# on two images its bad right?
+# To really get two images t-1 and t
+# that can be used for inference
+# they need to have same transformation
+
 class CenterDataset(Dataset):
-    def __init__(self, data_dir: str, transform: Optional[CenterTransform]=None, include_boxes: bool=False):
+    def __init__(self, data_dir: str, transform: Optional[CenterTransform]=None, include_boxes: bool=False, use_prev_img: bool=False):
         self.data_dir = data_dir
         self.transform = transform
         self.include_boxes = include_boxes
+        self.use_prev_img = use_prev_img
 
         # Get all image filenames
         self.frame_files = sorted([
@@ -50,6 +58,14 @@ class CenterDataset(Dataset):
         if self.include_boxes:
             boxes = self._load_boxes(idx + 1)
             result['boxes_t'] = boxes
+
+        if self.use_prev_img:
+            # TODO: outsource as function
+            img_path = os.path.join(self.data_dir, self.frame_files[idx])
+            image_prev = Image.open(img_path).convert("RGB")
+            if self.transform:
+                image_prev, _ = self.transform(image_prev, centers) # TODO: change it that we dont need to put centers in
+            result['img_t_minus_1'] = image_prev
 
         return result
 
@@ -146,10 +162,13 @@ def custom_collate_fn(batch: List[Dict[str, Any]], max_objects: int=50) -> Dict[
         'lengths_t': lengths
     }
 
-    # Add boxes if present
     if 'boxes_t' in batch[0]:
         boxes = [item['boxes_t'] for item in batch]
         result['boxes_t'] = boxes
+
+    if 'img_t_minus_1' in batch[0]:
+        prev_images = torch.stack([item['img_t_minus_1'] for item in batch])
+        result['img_t_minus_1'] = prev_images
 
     return result
 
@@ -159,6 +178,7 @@ def create_dataloaders(train_dir: str='inputs/train',
                        num_workers: int=4,
                        img_size: int=224,
                        include_boxes: bool=False,
+                       use_prev_img: bool=False,
                        aug_config: Optional[AugmentationConfig]=None) -> Tuple[DataLoader, DataLoader]:
     # Create transforms
     train_transform = CenterTransform(
@@ -173,8 +193,8 @@ def create_dataloaders(train_dir: str='inputs/train',
     )
 
     # Create datasets
-    train_dataset = CenterDataset(train_dir, transform=train_transform, include_boxes=include_boxes)
-    val_dataset = CenterDataset(val_dir, transform=val_transform, include_boxes=include_boxes)
+    train_dataset = CenterDataset(train_dir, transform=train_transform, include_boxes=include_boxes, use_prev_img=use_prev_img)
+    val_dataset = CenterDataset(val_dir, transform=val_transform, include_boxes=include_boxes, use_prev_img=use_prev_img)
 
     # Create dataloaders
     train_dataloader = DataLoader(
@@ -248,7 +268,8 @@ def prepare_dataset_from_config(config: Dict[str, Any]) -> Tuple[DataLoader, Dat
         batch_size=config.get("batch_size", 8),
         num_workers=config.get("num_workers", 4),
         img_size=config.get("img_size", 224),
-        aug_config=aug_config
+        aug_config=aug_config,
+        use_prev_img=config.get("use_prev_img", False)
     )
 
 if __name__ == '__main__':
@@ -270,6 +291,7 @@ if __name__ == '__main__':
         img_t = batch['img_t']  # shape: [B, C, H, W]
         gt_t = batch['gt_t']    # ground truth trajectories
         lengths_t = batch['lengths_t']
+        img_t_minus_1 = batch['img_t_minus_1']
 
         img_t = img_t * std + mean
 
@@ -283,7 +305,9 @@ if __name__ == '__main__':
         axes = axes.flatten()  # flatten to 1D list for easy indexing
 
         for i in range(B):
-            img_np = img_t[i].permute(1, 2, 0).numpy()
+            img_np1 = img_t[i].permute(1, 2, 0).numpy()
+            img_np2 = img_t_minus_1[i].permute(1, 2, 0).numpy()
+            img_np = np.hstack((img_np1, img_np2))
             xs = gt_t[i][:, 0] * W
             ys = gt_t[i][:, 1] * H
 
@@ -298,4 +322,5 @@ if __name__ == '__main__':
 
         plt.tight_layout()
         plt.show()
+
         break

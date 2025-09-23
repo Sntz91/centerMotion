@@ -74,8 +74,20 @@ class CenterTransform:
 
     def __call__(self, image: Image.Image, centers: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         if self.augment:
-            image, centers = self._apply_augmentations(image, centers)
-        
+            params = self._sample_augmentation_params(image.size)
+            image, centers = self._apply_augmentations(image, centers, params)
+        return self._finalize(image, centers)
+
+    def __call_pair__(self, img_prev: Image.Image, img_curr: Image.Image, centers: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self.augment:
+            params = self._sample_augmentation_params(img_curr.size)
+            img_prev, _ = self._apply_augmentations(img_prev, torch.empty(0), params)
+            img_curr, centers = self._apply_augmentations(img_curr, centers, params)
+        img_prev, _ = self._finalize(img_prev, torch.empty(0))
+        img_curr, centers = self._finalize(img_curr, centers)
+        return img_prev, img_curr, centers
+
+    def _finalize(self, image, centers):
         # Always resize to target size and normalize
         image = image.resize(self.img_size)
         image = TF.to_tensor(image)
@@ -84,82 +96,101 @@ class CenterTransform:
         # Ensure centers is always 2D [N, 2]
         if centers.numel() > 0 and centers.dim() == 1:
             centers = centers.unsqueeze(0)
-        
+
         return image, centers
 
-    def _apply_augmentations(self, image: Image.Image, centers: torch.Tensor) -> Tuple[Image.Image, torch.Tensor]:
+    def _sample_augmentation_params(self, img_size: Tuple[int, int]) -> Dict[str, Any]:
+        width, height = img_size
+
+        params = {
+            "crop_params": None,
+            "do_hflip": torch.rand(1) < self.aug_config.flip_prob,
+            "do_vflip": torch.rand(1) < self.aug_config.flip_prob,
+            "angle": random.uniform(*self.aug_config.rotation_angle_range),
+            "scale": random.uniform(*self.aug_config.scale_range),
+            "tx": random.uniform(*self.aug_config.translation_range) * width,
+            "ty": random.uniform(*self.aug_config.translation_range) * height,
+            "do_color": True,
+            "do_blur": torch.rand(1) < self.aug_config.gaussian_blur_prob,
+            "blur_kernel": random.choice(self.aug_config.gaussian_blur_kernel_size),
+        }
+
+        if torch.rand(1) < self.aug_config.crop_prob:
+            params["crop_params"] = self._get_random_crop_params(width, height)
+
+        if params["do_color"]:
+            fn_idx, brightness, contrast, saturation, hue = transforms.ColorJitter.get_params(
+                brightness=[max(0, 1 - self.aug_config.color_jitter_brightness), 1 + self.aug_config.color_jitter_brightness],
+                contrast=[max(0, 1 - self.aug_config.color_jitter_contrast), 1 + self.aug_config.color_jitter_contrast],
+                saturation=[max(0, 1 - self.aug_config.color_jitter_saturation), 1 + self.aug_config.color_jitter_saturation],
+                hue=[-self.aug_config.color_jitter_hue, self.aug_config.color_jitter_hue]
+            )
+        params["color_jitter"] = (fn_idx, brightness, contrast, saturation, hue)
+
+        return params
+
+    def _apply_augmentations(self, image: Image.Image, centers: torch.Tensor, params: Dict[str, Any]) -> Tuple[Image.Image, torch.Tensor]:
         original_size = image.size[::-1] 
 
         # 1. Random Crop (changes coordinate system -> Must be first)
-        if torch.rand(1) < self.aug_config.crop_prob:
-            image, centers = self._apply_random_crop(image, centers, original_size)
+        # if torch.rand(1) < self.aug_config.crop_prob:
+        if params["crop_params"] is not None:
+            image, centers = self._apply_random_crop(image, centers, original_size, params["crop_params"])
 
         # 2. Horizontal and vertical flips
-        image, centers = self._apply_flips(image, centers)
+        if params["do_hflip"]:
+            image = TF.hflip(image)
+            if centers.numel() > 0:
+                centers[:, 0] = 1.0 - centers[:, 0]
+
+        if params["do_vflip"]:
+            image = TF.vflip(image)
+            if centers.numel() > 0:
+                centers[:, 1] = 1.0 - centers[:, 1]
 
         # 3. Affine transformations (rotation, scale, translation)
-        image, centers = self._apply_affine_transforms(image, centers)
+        image = TF.affine(
+            image, 
+            angle=params["angle"],
+            translate=(int(params["tx"]), int(params["ty"])),
+            scale=params["scale"],
+            shear=0
+        )
+        if centers.numel() > 0:
+            centers = self._transform_centers_for_affine(
+                centers, image.size[0], image.size[1],
+                params["angle"], (params["tx"], params["ty"]), params["scale"]
+            )
 
         # 4. Color augmentations
-        image = self.color_jitter(image)
+        if params["do_color"]:
+            fn_idx, brightness, contrast, saturation, hue = params["color_jitter"]
+            for fn_id in fn_idx:
+                if fn_id == 0 and brightness is not None:
+                    image = TF.adjust_brightness(image, brightness)
+                elif fn_id == 1 and contrast is not None:
+                    image = TF.adjust_contrast(image, contrast)
+                elif fn_id == 2 and saturation is not None:
+                    image = TF.adjust_saturation(image, saturation)
+                elif fn_id == 3 and hue is not None:
+                    image = TF.adjust_hue(image, hue)
 
         # 5. Gaussian blur
-        if torch.rand(1) < self.aug_config.gaussian_blur_prob:
-            kernel_size = random.choice(self.aug_config.gaussian_blur_kernel_size)
-            image = TF.gaussian_blur(image, kernel_size=kernel_size)
+        if params["do_blur"]:
+            image = TF.gaussian_blur(image, kernel_size=params["blur_kernel"])
 
         return image, centers
 
     def _apply_random_crop(self, image: Image.Image, centers: torch.Tensor,
-                           original_size: Tuple[int, int]) -> Tuple[Image.Image, torch.Tensor]:
-        orig_width, orig_height = image.size
-        crop_params = self._get_random_crop_params(orig_width, orig_height)
+                           original_size: Tuple[int, int], crop_params: Tuple[int, int, int, int]) -> Tuple[Image.Image, torch.Tensor]:
         i, j, h, w = crop_params
-        
         image = TF.crop(image, i, j, h, w)
-
         # No centers -> just crop
         if centers.numel() == 0:
             return image, centers
-        
-        centers = self._transform_centers_for_crop(centers, crop_params, (orig_height, orig_width))
-        
+        centers = self._transform_centers_for_crop(centers, crop_params, original_size)
         return image, centers
 
-    def _apply_flips(self, image: Image.Image, centers: torch.Tensor) -> Tuple[Image.Image, torch.Tensor]: 
-        orig_centers = centers
-        # Horizontal flip
-        if torch.rand(1) < self.aug_config.flip_prob:
-            image = TF.hflip(image)
-            # If centers exists
-            if centers.numel() != 0:
-                centers[:, 0] = 1.0 - centers[:, 0]
-
-        # Vertical flip
-        if torch.rand(1) < self.aug_config.flip_prob:
-            image = TF.vflip(image)
-            # If centers exists
-            if centers.numel() > 0:
-                centers[:, 1] = 1.0 - centers[:, 1]
-        
-        return image, centers
-
-    def _apply_affine_transforms(self, image: Image.Image, centers: torch.Tensor) -> Tuple[Image.Image, torch.Tensor]:
-        width, height = image.size
-
-        angle = random.uniform(*self.aug_config.rotation_angle_range)
-        scale = random.uniform(*self.aug_config.scale_range)
-        tx = random.uniform(*self.aug_config.translation_range) * width
-        ty = random.uniform(*self.aug_config.translation_range) * height
-
-        image = TF.affine(image, angle=angle, translate=(int(tx), int(ty)), scale=scale, shear=0)
-
-        if centers.numel() > 0:
-            centers = self._transform_centers_for_affine(centers, width, height, angle, (tx, ty), scale)
-
-        return image, centers
-
-    # TODO:
     def _get_random_crop_params(self, img_width: int, img_height: int) -> Tuple[int, int, int, int]:
         area = img_height * img_width
 
@@ -218,7 +249,6 @@ class CenterTransform:
 
          return centers_new[valid_mask]
 
-    # TODO: Here is an error
     def _transform_centers_for_affine(self, centers: torch.Tensor, width: int, height: int,
                                      angle: float, translate: Tuple[float, float], 
                                      scale: float) -> torch.Tensor:
@@ -263,13 +293,17 @@ if __name__ == '__main__':
     img_filename = 'frame_01046.jpg'
     centers_filename = 'frame_01046.txt'
 
+    prev_img_filename = 'frame_01045.jpg'
+
     img_path = os.path.join(base_dir, img_filename)
     centers_path = os.path.join(base_dir, centers_filename)
+    prev_img_path = os.path.join(base_dir, prev_img_filename)
 
     # --- Data loading ---
     try:
         # Load the image
         original_image = Image.open(img_path).convert('RGB')
+        prev_image = Image.open(prev_img_path).convert('RGB')
         
         # Load the centers
         centers_array = np.loadtxt(centers_path)
@@ -287,22 +321,28 @@ if __name__ == '__main__':
     # --- Apply transformation ---
     # We will use the default image size and augmentation config
     transform = CenterTransform(augment=True)
-    augmented_image_tensor, augmented_centers = transform(original_image, original_centers.clone())
+    augmented_image_tensor, augmented_prev_image_tensor, augmented_centers = transform.__call_pair__(original_image, prev_image, original_centers.clone())
+    # augmented_image_tensor, augmented_centers = transform(original_image, original_centers.clone())
     
     # --- Visualization ---
     
     # Convert augmented image tensor back to PIL Image for plotting
     # Denormalize the image tensor
-    mean = torch.tensor(transform.normalize.mean).view(-1, 1, 1)
-    std = torch.tensor(transform.normalize.std).view(-1, 1, 1)
+    # mean = torch.tensor(transform.normalize.mean).view(-1, 1, 1)
+    # std = torch.tensor(transform.normalize.std).view(-1, 1, 1)
     
-    denormalized_image_tensor = augmented_image_tensor * std + mean
+    # denormalized_image_tensor = augmented_image_tensor * std + mean
+    # denormalized_prev_image_tensor = augmented_prev_image_tensor * std + mean
     
     # Permute dimensions for plotting (C, H, W) -> (H, W, C)
-    denormalized_image = denormalized_image_tensor.permute(1, 2, 0).numpy()
+    # denormalized_image = denormalized_image_tensor.permute(1, 2, 0).numpy()
+    # denormalized_prev_image = denormalized_prev_image_tensor.permute(1, 2, 0).numpy()
+
+    denormalized_image = augmented_image_tensor.permute(1, 2, 0).numpy()
+    denormalized_prev_image = augmented_prev_image_tensor.permute(1, 2, 0).numpy()
     
     # Create the plot
-    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+    fig, axes = plt.subplots(1, 4, figsize=(12, 6))
     
     # Original Image and Centers
     axes[0].imshow(original_image)
@@ -314,7 +354,7 @@ if __name__ == '__main__':
     axes[0].set_title('Original Image and Centers')
     axes[0].legend()
     axes[0].axis('off')
-    
+
     # Augmented Image and Centers
     axes[1].imshow(denormalized_image)
     if augmented_centers.numel() > 0:
@@ -326,5 +366,17 @@ if __name__ == '__main__':
     axes[1].legend()
     axes[1].axis('off')
 
+    axes[2].imshow(denormalized_prev_image)
+    axes[2].set_title('Prev image')
+    axes[2].axis('off')
+
+    diff_img = denormalized_image - denormalized_prev_image
+
+    axes[3].imshow(diff_img)
+    axes[3].set_title('DIFF image')
+    axes[3].axis('off')
+
     plt.tight_layout()
     plt.show()
+
+    # TODO PLOT DIFFERENCE OF IMAGES

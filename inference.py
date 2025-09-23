@@ -253,7 +253,7 @@ def main():
     conf_threshold = 0.5
     
     # SAHI Configuration
-    use_sahi = True  # Set to True to enable SAHI
+    use_sahi = False 
     slice_size = 224
     overlap = 0.2
     

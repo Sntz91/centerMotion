@@ -43,3 +43,4 @@ scale_range: [0.9, 1.1]
 translation_range: [-0.1, 0.1]
 gaussian_blur_prob: 0.3
 gaussian_blur_kernel_size: [3, 5]
+use_prev_img: True
