@@ -8,11 +8,6 @@ from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict, Any
 from data.transformations import CenterTransform, AugmentationConfig
 
-# Ok. So the problem is that if i use data augmentations, 
-# on two images its bad right?
-# To really get two images t-1 and t
-# that can be used for inference
-# they need to have same transformation
 
 class CenterDataset(Dataset):
     def __init__(self, data_dir: str, transform: Optional[CenterTransform]=None, include_boxes: bool=False, use_prev_img: bool=False):
@@ -41,31 +36,29 @@ class CenterDataset(Dataset):
         # Load centers
         centers = self._load_centers(idx + 1)
 
-        # Apply transformations
-        if self.transform:
-            image, centers = self.transform(image, centers)
+        result = {}
+
+        if self.use_prev_img:
+            img_prev_path = os.path.join(self.data_dir, self.frame_files[idx])
+            image_prev = Image.open(img_prev_path).convert("RGB")
+            if self.transform:
+                image_prev, image, centers = self.transform.__call_pair__(image_prev, image, centers) # TODO: change it that we dont need to put centers in
+            result['img_t_minus_1'] = image_prev
+        else:
+            # Apply transformations
+            if self.transform:
+                image, centers = self.transform(image, centers)
 
         # Create ground truth with objectness
         gt = self._create_ground_truth(centers)
 
-        # Base return dictionary
-        result = {
-            'img_id': torch.tensor(idx, dtype=torch.long),
-            'img_t': image,
-            'gt': gt
-        }
+        result['img_t'] = image
+        result['gt'] = gt
+        result['img_id'] = torch.tensor(idx, dtype=torch.long)
 
         if self.include_boxes:
             boxes = self._load_boxes(idx + 1)
             result['boxes_t'] = boxes
-
-        if self.use_prev_img:
-            # TODO: outsource as function
-            img_path = os.path.join(self.data_dir, self.frame_files[idx])
-            image_prev = Image.open(img_path).convert("RGB")
-            if self.transform:
-                image_prev, _ = self.transform(image_prev, centers) # TODO: change it that we dont need to put centers in
-            result['img_t_minus_1'] = image_prev
 
         return result
 
@@ -284,21 +277,21 @@ if __name__ == '__main__':
 
     train_dataloader, val_dataloader = prepare_dataset_from_config(config)
     transform = CenterTransform(augment=True)
-    mean = torch.tensor(transform.normalize.mean).view(-1, 1, 1)
-    std = torch.tensor(transform.normalize.std).view(-1, 1, 1)
+    # mean = torch.tensor(transform.normalize.mean).view(-1, 1, 1)
+    # std = torch.tensor(transform.normalize.std).view(-1, 1, 1)
 
     for batch_idx, batch in enumerate(train_dataloader):
         img_t = batch['img_t']  # shape: [B, C, H, W]
         gt_t = batch['gt_t']    # ground truth trajectories
         lengths_t = batch['lengths_t']
-        img_t_minus_1 = batch['img_t_minus_1']
+        if config.get("use_prev_img", False):
+            img_t_minus_1 = batch['img_t_minus_1']
 
-        img_t = img_t * std + mean
+        # img_t = img_t * std + mean
 
         B, C, H, W = img_t.size()
 
-        # Grid setup: 4 images per row
-        ncols = 4
+        ncols = 2
         nrows = math.ceil(B / ncols)
 
         fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 4, nrows * 4))
@@ -306,8 +299,12 @@ if __name__ == '__main__':
 
         for i in range(B):
             img_np1 = img_t[i].permute(1, 2, 0).numpy()
-            img_np2 = img_t_minus_1[i].permute(1, 2, 0).numpy()
-            img_np = np.hstack((img_np1, img_np2))
+            if config.get("use_prev_img", False):
+                img_np2 = img_t_minus_1[i].permute(1, 2, 0).numpy()
+                img_np = np.hstack((img_np1, img_np2))
+                img_np = np.hstack((img_np, (img_np1 - img_np2)))
+            else:
+                img_np = img_np1
             xs = gt_t[i][:, 0] * W
             ys = gt_t[i][:, 1] * H
 
