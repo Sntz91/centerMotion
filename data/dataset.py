@@ -7,6 +7,7 @@ import numpy as np
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict, Any
 from data.transformations import CenterTransform, AugmentationConfig
+from multimethod import multimethod
 
 
 class CenterDataset(Dataset):
@@ -42,7 +43,7 @@ class CenterDataset(Dataset):
             img_prev_path = os.path.join(self.data_dir, self.frame_files[idx])
             image_prev = Image.open(img_prev_path).convert("RGB")
             if self.transform:
-                image_prev, image, centers = self.transform.__call_pair__(image_prev, image, centers) # TODO: change it that we dont need to put centers in
+                image_prev, image, centers = self.transform(image_prev, image, centers) # TODO: change it that we dont need to put centers in
             result['img_t_minus_1'] = image_prev
         else:
             # Apply transformations

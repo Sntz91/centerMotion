@@ -6,6 +6,7 @@ import random
 import math
 from typing import List, Tuple, Optional, Dict, Any
 from dataclasses import dataclass
+from multimethod import multimethod
 
 @dataclass
 class AugmentationConfig:
@@ -72,13 +73,17 @@ class CenterTransform:
             hue=self.aug_config.color_jitter_hue
         )
 
+    @multimethod
     def __call__(self, image: Image.Image, centers: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """ Call function for using only one image """
         if self.augment:
             params = self._sample_augmentation_params(image.size)
             image, centers = self._apply_augmentations(image, centers, params)
         return self._finalize(image, centers)
 
-    def __call_pair__(self, img_prev: Image.Image, img_curr: Image.Image, centers: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    @multimethod
+    def __call__(self, img_prev: Image.Image, img_curr: Image.Image, centers: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """ Call function for adding t-1 image """
         if self.augment:
             params = self._sample_augmentation_params(img_curr.size)
             img_prev, _ = self._apply_augmentations(img_prev, torch.empty(0), params)
@@ -321,7 +326,7 @@ if __name__ == '__main__':
     # --- Apply transformation ---
     # We will use the default image size and augmentation config
     transform = CenterTransform(augment=True)
-    augmented_image_tensor, augmented_prev_image_tensor, augmented_centers = transform.__call_pair__(original_image, prev_image, original_centers.clone())
+    augmented_image_tensor, augmented_prev_image_tensor, augmented_centers = transform(original_image, prev_image, original_centers.clone())
     # augmented_image_tensor, augmented_centers = transform(original_image, original_centers.clone())
     
     # --- Visualization ---
