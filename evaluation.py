@@ -8,8 +8,8 @@ import os
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict
 import yaml
-from model import CenterPredictor
-from dataset import get_val_dataset
+from model.model import initialize_model_from_config
+from data.dataset import create_val_dataset_only
 
 # Configuration
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -211,19 +211,7 @@ class ObjectDetectionEvaluator:
         """Load the trained model"""
         with open("config.yaml") as f:
             config = yaml.safe_load(f)
-        self.model = CenterPredictor(
-            backbone_output_dim=config["backbone_output_dim"],
-            hidden_dim=config["hidden_dim"],
-            patch_size=config["patch_size"],
-            num_decoders=config["num_decoders"],
-            max_preds=config["max_preds"],
-            backbone=config["backbone"],
-            n_attention_heads=config["n_attention_heads"],
-            attention_dropout=config["attention_dropout"],
-            dropout_1=config["dropout_1"],
-            dropout_2=config["dropout_2"],
-            dropout_3=config["dropout_3"],
-        ).to(self.device)
+        self.model = initialize_model_from_config(config).to(self.device)
         self.model.load_state_dict(
             torch.load(self.model_path + 'best_model.pt', map_location=self.device)
         )
@@ -231,7 +219,7 @@ class ObjectDetectionEvaluator:
         
     def load_dataset(self):
         """Load validation dataset"""
-        self.val_dataset = get_val_dataset(img_size=IMG_SIZE)
+        self.val_dataset = create_val_dataset_only(img_size=IMG_SIZE)
     
     def predict(self, image: torch.Tensor, conf_threshold: float = 0.5) -> Tuple[np.ndarray, np.ndarray]:
         """Get predictions for a single image"""
