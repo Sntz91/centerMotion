@@ -7,7 +7,7 @@ from torch.cuda.amp import autocast, GradScaler
 from model.model import initialize_model_from_config
 from data.dataset import prepare_dataset_from_config
 from utils.utils import plot_validation, plot_training_curve, LossTracker
-from model.loss import center_loss_fn
+from model.loss import GaussianCenterLoss#center_loss_fn
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import random
@@ -16,12 +16,14 @@ import shutil
 import os
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+center_loss_fn = GaussianCenterLoss(k_factor=0.3, img_size=518) #TODO: FK
 
 @torch.no_grad()
 def log_predictions(model, batch, writer, step, tag="Train"):
     model.eval()
     preds = model(batch["img_t"].to(DEVICE)).cpu()
-    losses = [center_loss_fn(pred.unsqueeze(0), gt.unsqueeze(0), length.unsqueeze(0))[0].item() for pred, gt, length in zip(preds, batch["gt_t"], batch["lengths_t"])]
+    # losses = [center_loss_fn(pred.unsqueeze(0), gt.unsqueeze(0), length.unsqueeze(0))[0].item() for pred, gt, length in zip(preds, batch["gt_t"], batch["lengths_t"])]
+    losses = [center_loss_fn(pred.unsqueeze(0), gt.unsqueeze(0)) for pred, gt in zip(preds, batch["boxes_t"])]
     plotted_grid = plot_validation(batch["img_t"], batch["gt_t"], preds, losses)
     writer.add_image(f'Plotted Images Grid {tag}', plotted_grid, step)
 
@@ -30,19 +32,21 @@ def training_step(model, batch, optimizer, scaler):
     with autocast():
         preds = model(batch["img_t"].to(DEVICE))
     # SO DO I CALC LOSS ON CPU OR GPU HERE? BOTH. hmm...
-        loss, cls_loss, reg_loss = center_loss_fn(preds, batch["gt_t"].to(DEVICE), batch["lengths_t"].to(DEVICE))
+        # loss, cls_loss, reg_loss = center_loss_fn(preds, batch["gt_t"].to(DEVICE), batch["lengths_t"].to(DEVICE))
+        loss = center_loss_fn(preds, batch["boxes_t"])
     optimizer.zero_grad(set_to_none=True)
     scaler.scale(loss).backward()
     scaler.step(optimizer)
     scaler.update()
-    return loss.item(), cls_loss.item(), reg_loss.item()
+    return loss.item()#, cls_loss.item(), reg_loss.item()
 
 def validation_step(model, batch):
     model.eval()
     with torch.no_grad():
         preds = model(batch["img_t"].to(DEVICE))
-        loss, cls_loss, reg_loss = center_loss_fn(preds, batch["gt_t"].to(DEVICE), batch["lengths_t"].to(DEVICE))
-    return loss.item(), cls_loss.item(), reg_loss.item()
+        # loss, cls_loss, reg_loss = center_loss_fn(preds, batch["gt_t"].to(DEVICE), batch["lengths_t"].to(DEVICE))
+        loss = center_loss_fn(preds, batch["boxes_t"])
+    return loss.item()#, cls_loss.item(), reg_loss.item()
 
 def main():
     # INITIALIZATION
@@ -80,6 +84,7 @@ def main():
     # LETS GO
     for epoch in range(config["epochs"]):
         print(f"Epoch {epoch+1}/{config['epochs']}")
+        center_loss_fn.update_sigma(epoch)
 
         # --- Training ---
         # prof.start()
@@ -91,9 +96,9 @@ def main():
             loss_tuple = training_step(model, batch, optimizer, scaler)
             train_tracker.update(loss_tuple)
             pbar.set_postfix(train_tracker.batch_avg)
-            if batch_idx%50==0:
-                writer.add_scalars(f'TRAIN Loss', train_tracker.batch_avg, train_step)
-            if batch_idx%300==0:
+            # if batch_idx%100==0:
+                # writer.add_scalars(f'TRAIN Loss', train_tracker.batch_avg, train_step)
+            if batch_idx%1000==0:
                 log_predictions(model, batch, writer, train_step, "TRAIN")
             # if batch_idx >= profile_batches:
                 # prof.stop()

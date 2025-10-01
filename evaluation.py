@@ -13,8 +13,11 @@ from data.dataset import create_val_dataset_only
 
 # Configuration
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-MODEL_PATH = "experiments/BaselineDINO/"
-IMG_SIZE = 224
+with open("config.yaml") as f:
+    config = yaml.safe_load(f)
+MODEL_PATH = f'experiments/{config['model_name']}/'
+IMG_SIZE = config['img_size']
+# TODO: CONFIG
 AREA_THRESHOLDS = {
     'large': 200,
     'medium': 100
@@ -29,6 +32,7 @@ class EvalResult:
     assignments: List[Tuple]
     pred_scores: np.ndarray
     pred_categories: List[str]
+    pred_points: np.ndarray
     
     @property
     def precision(self) -> float:
@@ -40,8 +44,8 @@ class EvalResult:
 
 def get_box_category(box: np.ndarray) -> str:
     """Classify box as Small, Medium, or Large based on area"""
-    xtl, ytl, xbr, ybr = box * IMG_SIZE
-    area = (xbr - xtl) * (ybr - ytl)
+    _, _, w, h = box * IMG_SIZE
+    area = w * h
     
     if area >= AREA_THRESHOLDS['large']:
         return 'L'
@@ -54,9 +58,9 @@ def match_predictions_to_gt(pred_points: np.ndarray, gt_boxes: np.ndarray,
                            pred_scores: np.ndarray) -> EvalResult:
     """Match predictions to ground truth boxes using greedy assignment"""
     if len(pred_points) == 0:
-        return EvalResult(0, 0, len(gt_boxes), [], pred_scores, [])
+        return EvalResult(0, 0, len(gt_boxes), [], pred_scores, [], pred_points)
     if len(gt_boxes) == 0:
-        return EvalResult(0, len(pred_points), 0, [], pred_scores, [None] * len(pred_points))
+        return EvalResult(0, len(pred_points), 0, [], pred_scores, [None] * len(pred_points), pred_points)
     
     # Get GT categories
     gt_categories = [get_box_category(box) for box in gt_boxes]
@@ -69,12 +73,15 @@ def match_predictions_to_gt(pred_points: np.ndarray, gt_boxes: np.ndarray,
     # Greedy matching - go through each prediction
     for pred_idx, (x, y) in enumerate(pred_points):
         match_found = False
-        for gt_idx, (xtl, ytl, xbr, ybr) in enumerate(gt_boxes):
+        for gt_idx, (cx, cy, w, h) in enumerate(gt_boxes):
             # Already matched
             if gt_idx in matched_gt:
                 continue
                 
             # Check if prediction is inside GT box
+            xtl, ytl = cx - w/2, cy - h/2
+            xbr, ybr = cx + w/2, cy + h/2
+
             if xtl <= x <= xbr and ytl <= y <= ybr:
                 # Match found
                 matched_gt.add(gt_idx)
@@ -92,7 +99,7 @@ def match_predictions_to_gt(pred_points: np.ndarray, gt_boxes: np.ndarray,
     fp = len(pred_points) - tp
     fn = len(gt_boxes) - len(matched_gt)
     
-    return EvalResult(tp, fp, fn, assignments, pred_scores, pred_categories)
+    return EvalResult(tp, fp, fn, assignments, pred_scores, pred_categories, pred_points)
 
 def compute_ap_from_pr(precision: np.ndarray, recall: np.ndarray) -> float:
     """Compute Average Precision using 11-point interpolation"""
@@ -152,8 +159,7 @@ def create_visualization(pred_points: np.ndarray, gt_boxes: np.ndarray,
     """Create visualization of predictions and ground truth"""
     H, W = image.shape[1:]
     pred_px = pred_points * np.array([W, H])
-    gt_centers = np.stack([(gt_boxes[:, 0] + gt_boxes[:, 2]) / 2,
-                          (gt_boxes[:, 1] + gt_boxes[:, 3]) / 2], axis=1)
+    gt_centers = np.stack([gt_boxes[:, 0], gt_boxes[:, 1]], axis=1)
     gt_centers_px = gt_centers * np.array([W, H])
     boxes_px = gt_boxes * np.array([W, H, W, H])
     
@@ -167,12 +173,13 @@ def create_visualization(pred_points: np.ndarray, gt_boxes: np.ndarray,
         color = category_colors[category]
         
         box_px = box * np.array([W, H, W, H])
-        xtl, ytl, xbr, ybr = box_px
+        cx, cy, w, h = box_px
+        xtl, ytl = cx-w/2, cy-h/2
         
         rect = patches.Rectangle(
-            (xtl, ytl), xbr - xtl, ybr - ytl,
+            (xtl, ytl), w, h,
             linewidth=2, edgecolor=color, facecolor='none',
-            label=f'{category} ({int((xbr-xtl)*(ybr-ytl))} px²)'
+            label=f'{category} ({int(w*h)} px²)'
         )
         ax.add_patch(rect)
     
@@ -206,16 +213,20 @@ class ObjectDetectionEvaluator:
         self.device = device
         self.model = None
         self.val_dataset = None
+        self.use_gt = False
         
     def load_model(self):
         """Load the trained model"""
         with open("config.yaml") as f:
             config = yaml.safe_load(f)
         self.model = initialize_model_from_config(config).to(self.device)
-        self.model.load_state_dict(
-            torch.load(self.model_path + 'best_model.pt', map_location=self.device)
-        )
-        self.model.eval()
+        if config['backbone'] == 'perfect':
+            self.use_gt = True
+        if config['backbone'] not in ['yolo', 'perfect', 'random']:
+            self.model.load_state_dict(
+                torch.load(self.model_path + 'best_model.pt', map_location=self.device)
+            )
+            self.model.eval()
         
     def load_dataset(self):
         """Load validation dataset"""
@@ -224,8 +235,13 @@ class ObjectDetectionEvaluator:
     def predict(self, image: torch.Tensor, conf_threshold: float = 0.5) -> Tuple[np.ndarray, np.ndarray]:
         """Get predictions for a single image"""
         with torch.no_grad():
-            preds = self.model(image.unsqueeze(0).to(self.device)).squeeze(0).cpu()
-        
+            preds = self.model(image.unsqueeze(0).to(self.device)).cpu()
+        # If only one dim
+        if preds.dim() == 3 and preds.size(0) == 1:
+            preds = preds.squeeze(0)
+        if preds.numel() == 0:
+            return np.zeros((0, 2)), np.zeros((0,))
+
         # Apply sigmoid to confidence scores
         preds[:, 2] = torch.sigmoid(preds[:, 2])
         
@@ -253,7 +269,10 @@ class ObjectDetectionEvaluator:
             samples = list(samples)[:max_samples]
         
         for i, item in tqdm(samples, desc=f"Evaluating P/R @ {conf_threshold}"):
-            pred_points, pred_scores = self.predict(item["img_t"], conf_threshold)
+            if self.use_gt:
+                pred_points, pred_scores = self.predict(item["gt"])
+            else:
+                pred_points, pred_scores = self.predict(item["img_t"], conf_threshold)
             gt_boxes = item["boxes_t"].numpy()
             
             result = match_predictions_to_gt(pred_points, gt_boxes, pred_scores)
@@ -288,7 +307,10 @@ class ObjectDetectionEvaluator:
             samples = list(samples)[:max_samples]
         
         for item in tqdm(samples, desc="Computing AP"):
-            pred_points, pred_scores = self.predict(item["img_t"], conf_threshold=0.0)
+            if self.use_gt:
+                pred_points, pred_scores = self.predict(item["gt"])
+            else:
+                pred_points, pred_scores = self.predict(item["img_t"], conf_threshold=0.0)
             gt_boxes = item["boxes_t"].numpy()
             
             result = match_predictions_to_gt(pred_points, gt_boxes, pred_scores)
@@ -358,11 +380,16 @@ class ObjectDetectionEvaluator:
         for indices, name in cases:
             for i, idx in enumerate(indices):
                 result, item = results[idx]
-                pred_points, _ = self.predict(item["img_t"])
+                # if self.use_gt:
+                    # pred_points, _ = self.predict(item["gt"])
+                # else:
+                    # pred_points, _ = self.predict(item["img_t"])
                 gt_boxes = item["boxes_t"].numpy()
                 
                 fig = create_visualization(
-                    pred_points, gt_boxes, result.assignments, item["img_t"],
+                    # pred_points, 
+                    result.pred_points,
+                    gt_boxes, result.assignments, item["img_t"],
                     f"{name}_{i} (P={result.precision:.2f}, R={result.recall:.2f})"
                 )
                 

@@ -11,27 +11,29 @@ from multimethod import multimethod
 
 
 class CenterDataset(Dataset):
-    def __init__(self, data_dir: str, transform: Optional[CenterTransform]=None, include_boxes: bool=False, use_prev_img: bool=False):
-        self.data_dir = data_dir
+    def __init__(self, data_dir: str, transform: Optional[CenterTransform]=None, include_boxes: bool=False, use_prev_img: bool=False, train_val='train'):
+        # data dir --> label_dir / image_dir --> train / val
+        self.label_dir = f'{data_dir}/labels/{train_val}'
+        self.image_dir = f'{data_dir}/images/{train_val}'
         self.transform = transform
         self.include_boxes = include_boxes
         self.use_prev_img = use_prev_img
 
         # Get all image filenames
         self.frame_files = sorted([
-            f for f in os.listdir(data_dir)
+            f for f in os.listdir(self.image_dir)
             if f.lower().endswith(('.jpg', '.png', '.jpeg'))
         ])
 
         if len(self.frame_files) == 0:
-            raise ValueError(f'No image files found in {data_dir}.')
+            raise ValueError(f'No image files found in {self.image_dir}.')
 
     def __len__(self) -> int:
         return len(self.frame_files) - 1
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         # Load image
-        img_path = os.path.join(self.data_dir, self.frame_files[idx + 1])
+        img_path = os.path.join(self.image_dir, self.frame_files[idx + 1])
         image = Image.open(img_path).convert("RGB")
 
         # Load centers
@@ -40,7 +42,7 @@ class CenterDataset(Dataset):
         result = {}
 
         if self.use_prev_img:
-            img_prev_path = os.path.join(self.data_dir, self.frame_files[idx])
+            img_prev_path = os.path.join(self.image_dir, self.frame_files[idx])
             image_prev = Image.open(img_prev_path).convert("RGB")
             if self.transform:
                 image_prev, image, centers = self.transform(image_prev, image, centers) # TODO: change it that we dont need to put centers in
@@ -66,7 +68,7 @@ class CenterDataset(Dataset):
     def _load_centers(self, frame_idx: int) -> torch.Tensor:
         """ Load center coordinates from txt file. """
         frame_name = os.path.splitext(self.frame_files[frame_idx])[0]
-        txt_path = os.path.join(self.data_dir, f'{frame_name}.txt')
+        txt_path = os.path.join(self.label_dir, f'{frame_name}_points.txt')
 
         if not os.path.exists(txt_path):
             return torch.empty(0, 2, dtype=torch.float32)
@@ -79,7 +81,7 @@ class CenterDataset(Dataset):
     def _load_boxes(self, frame_idx: int) -> torch.Tensor:
         """ Load bboxes from txt file. """
         frame_name = os.path.splitext(self.frame_files[frame_idx])[0]
-        txt_path = os.path.join(self.data_dir, f'{frame_name}_boxes.txt')
+        txt_path = os.path.join(self.label_dir, f'{frame_name}.txt')
 
         if not os.path.exists(txt_path):
             return torch.empty(0, 4, dtype=torch.float32)
@@ -88,11 +90,11 @@ class CenterDataset(Dataset):
             boxes = []
             for line in f:
                 parts = line.strip().split()
-                if len(parts) == 4:
-                    xtl, ytl, xbr, ybr = parts
-                    boxes.append([float(xtl), float(ytl), float(xbr), float(ybr)])
+                if len(parts) == 5:
+                    label, cx, cy, w, h = parts
+                    boxes.append([float(cx), float(cy), float(w), float(h)])
 
-        return torch.tensor(boxes, dtype=torch.float32) if boxes else torch.empty(0, 4, dtype=torch.float32)
+        return torch.tensor(boxes, dtype=torch.float32) if boxes else torch.empty(0, 5, dtype=torch.float32)
 
     def _create_ground_truth(self, centers: torch.Tensor) -> torch.Tensor:
         """ Create ground truth tensor with objectness scores. """
@@ -166,12 +168,11 @@ def custom_collate_fn(batch: List[Dict[str, Any]], max_objects: int=50) -> Dict[
 
     return result
 
-def create_dataloaders(train_dir: str='inputs/train',
-                       val_dir: str='inputs/val',
+def create_dataloaders(data_dir: str='inputs',
                        batch_size: int=8,
                        num_workers: int=4,
                        img_size: int=224,
-                       include_boxes: bool=False,
+                       include_boxes: bool=True,
                        use_prev_img: bool=False,
                        aug_config: Optional[AugmentationConfig]=None) -> Tuple[DataLoader, DataLoader]:
     # Create transforms
@@ -187,8 +188,8 @@ def create_dataloaders(train_dir: str='inputs/train',
     )
 
     # Create datasets
-    train_dataset = CenterDataset(train_dir, transform=train_transform, include_boxes=include_boxes, use_prev_img=use_prev_img)
-    val_dataset = CenterDataset(val_dir, transform=val_transform, include_boxes=include_boxes, use_prev_img=use_prev_img)
+    train_dataset = CenterDataset(data_dir, transform=train_transform, include_boxes=include_boxes, use_prev_img=use_prev_img, train_val='train')
+    val_dataset = CenterDataset(data_dir, transform=val_transform, include_boxes=include_boxes, use_prev_img=use_prev_img, train_val='val')
 
     # Create dataloaders
     train_dataloader = DataLoader(
@@ -203,7 +204,7 @@ def create_dataloaders(train_dir: str='inputs/train',
     val_dataloader = DataLoader(
         val_dataset,
         batch_size=batch_size,
-        shuffle=False,
+        shuffle=True,
         collate_fn=custom_collate_fn,
         num_workers=num_workers,
         pin_memory=True
@@ -212,30 +213,31 @@ def create_dataloaders(train_dir: str='inputs/train',
     return train_dataloader, val_dataloader
 
 
-def create_val_dataloader_only(val_dir: str='inputs/val',
+def create_val_dataloader_only(data_dir: str='inputs',
                                batch_size: int=8,
                                num_workers: int=4,
                                img_size: int=224,
+                               pin_memory=True,
                                include_boxes: bool=True) -> DataLoader:
     """ Create validation dataloader only for convenience. """
     val_transform = CenterTransform(img_size=(img_size, img_size), augment=False)
-    val_dataset = CenterDataset(val_dir, transform=val_transform, include_boxes=include_boxes)
+    val_dataset = CenterDataset(data_dir, transform=val_transform, include_boxes=include_boxes, train_val='val')
 
     return DataLoader(
         val_dataset,
         batch_size=batch_size,
-        shuffle=False,
+        shuffle=True,
         collate_fn=custom_collate_fn,
         num_workers=num_workers,
         pin_memory=pin_memory
     )
 
-def create_val_dataset_only(val_dir: str='inputs/val',
+def create_val_dataset_only(data_dir: str='inputs',
                             img_size: int=224,
                             include_boxes: bool=True) -> CenterDataset:
     """ Create validation dataset only for convenience. """
     val_transform = CenterTransform(img_size=(img_size, img_size), augment=False)
-    val_dataset = CenterDataset(val_dir, transform=val_transform, include_boxes=include_boxes)
+    val_dataset = CenterDataset(data_dir, transform=val_transform, include_boxes=include_boxes, train_val='val')
     return val_dataset
 
 def prepare_dataset_from_config(config: Dict[str, Any]) -> Tuple[DataLoader, DataLoader]:

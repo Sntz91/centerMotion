@@ -17,11 +17,12 @@ def load_model_and_config():
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = initialize_model_from_config(config).to(device)
-    model.load_state_dict(
-        torch.load('/home/tobias/experiments/BaselineDINO/best_model.pt', 
-                  map_location=torch.device(device))
-    )
-    model.eval()
+    if config['backbone'] != 'yolo':
+        model.load_state_dict(
+            torch.load('/home/tobias/experiments/YOLO224/best_model.pt', 
+                      map_location=torch.device(device))
+        )
+        model.eval()
     
     return model, config, device
 
@@ -258,12 +259,12 @@ def main():
     overlap = 0.2
     
     # Run image prediction
-    # predict_on_image(model, config, device, conf_threshold, plot_boxes=False, 
-                    # use_sahi=use_sahi, slice_size=slice_size, overlap=overlap)
+    predict_on_image(model, config, device, conf_threshold, plot_boxes=False, 
+                    use_sahi=use_sahi, slice_size=slice_size, overlap=overlap)
     
     # Run video prediction
-    predict_on_video(model, device, video_path, conf_threshold, start_frame=100,
-                     use_sahi=use_sahi, slice_size=slice_size, overlap=overlap)
+    # predict_on_video(model, device, video_path, conf_threshold, start_frame=100,
+                     # use_sahi=use_sahi, slice_size=slice_size, overlap=overlap)
 
 
 if __name__ == "__main__":

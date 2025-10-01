@@ -58,16 +58,12 @@ class CenterPredictor(nn.Module):
 
         self.backbone_output_dim = backbone_output_dim
         self.patch_size = patch_size
-        self.hidden_dim = hidden_dim
 
         # Decoder
         self.decoder = nn.ModuleList([
             DecoderBlock(backbone_output_dim, n_attention_heads, attention_dropout, dropout_1, dropout_2, dropout_3)
             for _ in range(num_decoders)
         ])
-
-
-        self.input_proj = nn.Linear(backbone_output_dim * 3, hidden_dim)
 
         # Prediction Head
         self.output_head = nn.Sequential(
@@ -79,7 +75,7 @@ class CenterPredictor(nn.Module):
         # Learnable queries
         self.query_embed = nn.Parameter(torch.randn(max_preds, backbone_output_dim))
 
-    def extract_features_old(self, img):
+    def extract_features(self, img):
         """ Extract features based on backbone type. """
         if self.backbone_type == 'dinov3_vitl16':
             feats = self.backbone.get_intermediate_layers(img, n=1, reshape=True)[0] 
@@ -90,45 +86,6 @@ class CenterPredictor(nn.Module):
             B, H, W, C = feats.shape
             memory = swin_feature_map.flatten(1, 2) # [B, H*W, C]
         return memory, B, H, W, C
-
-    def extract_features(self, img):
-        """
-        Extract multi-scale features from selected DINOv3 layers and project to decoder hidden_dim.
-
-        Returns:
-            memory: [B, H*W, hidden_dim] tensor for decoder
-            B, H, W, hidden_dim
-        """
-        assert 'dinov3' in self.backbone_type, "This function is for DINOv3 only"
-
-        # Get all intermediate layers (for ViT-L/16, 24 blocks)
-        all_layers = self.backbone.get_intermediate_layers(img, n=24, reshape=True)
-
-        # Explicitly select layers for multi-scale features: early, middle, late
-        selected_layers = [all_layers[3], all_layers[11], all_layers[21]]  # 0-indexed
-
-        # Determine target spatial resolution (use highest-res layer, usually early)
-        H_target, W_target = selected_layers[0].shape[2], selected_layers[0].shape[3]
-
-        # Upsample all layers to same spatial resolution
-        import torch.nn.functional as F
-        features_upsampled = [
-            F.interpolate(f, size=(H_target, W_target), mode='bilinear', align_corners=False)
-            for f in selected_layers
-        ]
-
-        # Concatenate along channel dimension
-        multi_scale_features = torch.cat(features_upsampled, dim=1)  # [B, 3*C, H, W]
-
-        # Flatten to [B, H*W, 3*C] for the decoder
-        B, C_total, H, W = multi_scale_features.shape
-        memory = multi_scale_features.permute(0, 2, 3, 1).reshape(B, H*W, C_total)
-
-        # Project to decoder hidden_dim (e.g., 1024)
-        memory = self.input_proj(memory)  # [B, H*W, hidden_dim]
-
-        return memory, B, H, W, self.hidden_dim
-
 
     def forward(self, img):
         # Extract Features

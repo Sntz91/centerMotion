@@ -72,18 +72,21 @@ def plot_training_curve(epoch_train_losses, epoch_val_losses, fname):
 class LossTracker:
     def __init__(self):
         self.reset_epoch()
-        self.epoch = {"total": [], "cls": [], "reg": []}
+        # self.epoch = {"total": [], "cls": [], "reg": []}
+        self.epoch = {"total": []}
 
     def reset_epoch(self):
-        self.running = {"total": 0.0, "cls": 0.0, "reg": 0.0}
+        # self.running = {"total": 0.0, "cls": 0.0, "reg": 0.0}
+        self.running = {"total": 0.0}
         self.count = 0
 
     def update(self, losses):
         """Update running totals with (total, cls, reg)."""
-        loss, cls, reg = losses
+        # loss, cls, reg = losses
+        loss = losses
         self.running["total"] += loss
-        self.running["cls"] += cls
-        self.running["reg"] += reg
+        # self.running["cls"] += cls
+        # self.running["reg"] += reg
         self.count += 1
 
     @property

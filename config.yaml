@@ -1,34 +1,34 @@
-model_name: BaselineDINOtest
-model_description: Baseline with DINO
-epochs: 20
-lr: 1.0e-4
+model_name: DINO518frozenIntermediateLayers
+model_description: DINO detector with frozen backbone and intermediate layers used for feature extraction.
+epochs: 10
+lr: 2.0e-4
 weight_decay: 1.0e-4
 
 # Loss parameters
-center_weight: 2.0
+center_weight: 5.0
 objectness_weight: 1.0
 focal_alpha: 0.25
 focal_gamma: 2.0
 cost_center_weight: 5.0
-cost_objectness_weight: 2.0
+cost_objectness_weight: 1.0
 
 # Model parameters
 hidden_dim: 1024
 backbone_output_dim: 1024
 patch_size: 16 # depends on img_size TODO: 
 num_decoders: 6
-max_preds: 50
+max_preds: 20
 backbone: dinov3_vitl16
-n_attention_heads: 4
+n_attention_heads: 16
 attention_dropout: 0.1
-dropout_1: 0.1
-dropout_2: 0.1
-dropout_3: 0.1
+dropout_1: 0.05
+dropout_2: 0.05
+dropout_3: 0.05
 
 # Data
-img_size: 224
+img_size: 518
 batch_size: 16
-num_workers: 4
+num_workers: 8
 # Augmentations
 color_jitter_brightness: 0.3
 color_jitter_contrast: 0.3
@@ -43,4 +43,4 @@ scale_range: [0.9, 1.1]
 translation_range: [-0.1, 0.1]
 gaussian_blur_prob: 0.3
 gaussian_blur_kernel_size: [3, 5]
-use_prev_img: True
+use_prev_img: False

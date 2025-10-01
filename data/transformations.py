@@ -294,11 +294,10 @@ if __name__ == '__main__':
     import matplotlib.pyplot as plt
 
     # --- File paths setup ---
-    base_dir = '/home/tobias/projects/01-cv/08-centerMotion/inputs/train/'
-    img_filename = 'frame_01046.jpg'
-    centers_filename = 'frame_01046.txt'
-
-    prev_img_filename = 'frame_01045.jpg'
+    base_dir = '/home/tobias/projects/01-cv/08-centerMotion/inputs/'
+    img_filename = 'images/train/frame_01046.jpg'
+    prev_img_filename = 'images/train/frame_01045.jpg'
+    centers_filename = 'labels/train/frame_01046_points.txt'
 
     img_path = os.path.join(base_dir, img_filename)
     centers_path = os.path.join(base_dir, centers_filename)
