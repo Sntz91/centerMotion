@@ -4,9 +4,10 @@ import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 from torch.profiler import profile, record_function, ProfilerActivity
 from torch.cuda.amp import autocast, GradScaler
+import torch.autograd
 from model.model import initialize_model_from_config
 from data.dataset import prepare_dataset_from_config
-from utils.utils import plot_validation, plot_training_curve, LossTracker
+from utils.utils import plot_validation, plot_training_curve, LossTracker, check_gradient_norm
 from model.loss import GaussianCenterLoss#center_loss_fn
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -16,7 +17,9 @@ import shutil
 import os
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-center_loss_fn = GaussianCenterLoss(k_factor=0.3, img_size=518) #TODO: FK
+center_loss_fn = GaussianCenterLoss(k_factor=0.3, l1_weight_schedule=10.0, num_epochs=10) #TODO: FK
+torch.autograd.set_detect_anomaly(True)
+CHECK_GRADIENTS = True
 
 @torch.no_grad()
 def log_predictions(model, batch, writer, step, tag="Train"):
@@ -29,8 +32,8 @@ def log_predictions(model, batch, writer, step, tag="Train"):
 
 def training_step(model, batch, optimizer, scaler):
     model.train()
-    with autocast():
-        preds = model(batch["img_t"].to(DEVICE))
+    with autocast(enabled=False):
+        preds = model(batch["img_t"].to(DEVICE).float())
     # SO DO I CALC LOSS ON CPU OR GPU HERE? BOTH. hmm...
         # loss, cls_loss, reg_loss = center_loss_fn(preds, batch["gt_t"].to(DEVICE), batch["lengths_t"].to(DEVICE))
         loss = center_loss_fn(preds, batch["boxes_t"])
@@ -38,6 +41,9 @@ def training_step(model, batch, optimizer, scaler):
     scaler.scale(loss).backward()
     scaler.step(optimizer)
     scaler.update()
+    if CHECK_GRADIENTS:
+        grad_norm = check_gradient_norm(model)
+        print(f"Total Gradient L2 Norm: {grad_norm:.6f}")
     return loss.item()#, cls_loss.item(), reg_loss.item()
 
 def validation_step(model, batch):
@@ -84,7 +90,7 @@ def main():
     # LETS GO
     for epoch in range(config["epochs"]):
         print(f"Epoch {epoch+1}/{config['epochs']}")
-        center_loss_fn.update_sigma(epoch)
+        center_loss_fn.set_epoch(epoch)
 
         # --- Training ---
         # prof.start()

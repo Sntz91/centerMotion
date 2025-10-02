@@ -15,9 +15,7 @@ def plot_validation(img_t_, gts_, preds_, losses):
         mask = gts_i[:, 2] != -1.0
         gts_i = gts_i[mask]
         # Prepare alphas to be a little bit nicer
-        alphas = torch.sigmoid(preds_[i,:,2])
-        # alphas = torch.where(preds_[i,:,2] > 0.8, 1.0, preds_[i,:,2])
-        # alphas = torch.clamp(preds_[i,:,2], 0.1, 1.0)
+        # alphas = torch.sigmoid(preds_[i,:,2])
         
         fig, ax = plt.subplots(figsize=(4, 4), dpi=100)
         ax.imshow(img_np)
@@ -29,7 +27,7 @@ def plot_validation(img_t_, gts_, preds_, losses):
         # plot preds
         x_coords = preds_[i, :, 0] * W
         y_coords = preds_[i, :, 1] * H
-        ax.scatter(x_coords, y_coords, c='red', marker='x', s=20, alpha=alphas)
+        ax.scatter(x_coords, y_coords, c='red', marker='x', s=20)#, alpha=alphas)
 
         ax.axis('off')
         ax.text(5, 15, f'loss: {losses[i]:.2f}', fontsize = 12, c='white')
@@ -108,3 +106,19 @@ class LossTracker:
         """Save all tracked losses to JSON"""
         with open(path, "w") as f:
             json.dump(self.epoch, f, indent=2)
+
+
+def check_gradient_norm(model):
+    """Calculates the total L2 norm of all parameter gradients."""
+    total_norm = 0
+    # Iterate over all parameters in the model
+    for p in model.parameters():
+        if p.grad is not None:
+            # Calculate the L2 norm for the gradient of this parameter
+            param_norm = p.grad.data.norm(2)
+            # Accumulate the squared norms
+            total_norm += param_norm.item() ** 2
+            
+    # Take the square root of the accumulated squared norms to get the total L2 norm
+    total_norm = total_norm ** (1. / 2)
+    return total_norm

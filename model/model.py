@@ -73,7 +73,8 @@ class CenterPredictor(nn.Module):
         self.output_head = nn.Sequential(
             nn.Linear(backbone_output_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, 3) # [x, y, objectness]
+            #nn.Linear(hidden_dim, 3) # [x, y, objectness]
+            nn.Linear(hidden_dim, 2) # [x, y, objectness]
         )
 
         # Learnable queries
@@ -144,9 +145,10 @@ class CenterPredictor(nn.Module):
 
         # Generate predictions
         preds = self.output_head(out)
-        xy = preds[..., :2].sigmoid() # xy coordinates in [0, 1]
-        objectness = preds[..., 2:] # raw logits for BCEWithLogitsLoss
-        preds = torch.cat([xy, objectness], dim=-1)
+        preds = preds.sigmoid()
+        # xy = preds[..., :2].sigmoid() # xy coordinates in [0, 1]
+        # objectness = preds[..., 2:] # raw logits for BCEWithLogitsLoss
+        # preds = torch.cat([xy, objectness], dim=-1)
 
         return preds
 
